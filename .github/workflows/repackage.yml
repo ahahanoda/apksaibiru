@@ -15,12 +15,6 @@ jobs:
         with:
           lfs: true
 
-      - name: Inspect input.apk
-        run: |
-          ls -lh input.apk
-          file input.apk
-          xxd input.apk | head -n 5
-
       - name: Set up JDK 8
         uses: actions/setup-java@v4
         with:
@@ -31,18 +25,11 @@ jobs:
         run: |
           mkdir unpacked
           cd unpacked
-          # 1. まず7-Zipで強制展開を試みる（特殊ヘッダや末尾ゴミデータを無視できる）
           7z x ../input.apk -y || true
-          
-          # 2. もし7zで展開できなければ、先頭からストリーム読み出しする jar xvf を実行
           if [ ! -f "AndroidManifest.xml" ]; then
             jar xvf ../input.apk
           fi
-
-          # 元の署名ファイルを削除
           rm -rf META-INF
-
-          # 綺麗な標準ZIP（clean.apk）として再梱包（resources.arscは無圧縮を維持）
           zip -qr ../clean.apk . -x "resources.arsc"
           if [ -f "resources.arsc" ]; then
             zip -q0 ../clean.apk resources.arsc
@@ -55,16 +42,23 @@ jobs:
           chmod +x ApkRename/*.sh
           ./ApkRename/apkRename.sh clean.apk com.twitter.android.bsky
 
+          # 生成されたAPKファイルを自動検索して target_renamed.apk に統一
+          echo "=== Generated APK files ==="
+          find . -maxdepth 3 -name "*.apk"
+          RENAMED_APK=$(find . -maxdepth 3 -name "*.apk" ! -name "input.apk" ! -name "clean.apk" | head -n 1)
+          echo "Detected renamed APK: $RENAMED_APK"
+          cp "$RENAMED_APK" target_renamed.apk
+
       - name: Sign APK with v1 (Android 2.3 Compatible)
         run: |
-          zip -d clean_renamed.apk "META-INF/*" || true
+          zip -d target_renamed.apk "META-INF/*" || true
           keytool -genkey -v -keystore android23.keystore -storepass android -alias android23 -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android,O=Android,C=US"
-          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore android23.keystore -storepass android -keypass android clean_renamed.apk android23
+          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore android23.keystore -storepass android -keypass android target_renamed.apk android23
 
       - name: Zipalign APK
         run: |
           BUILD_TOOLS=$(find $ANDROID_HOME/build-tools -maxdepth 1 | sort -V | tail -n 1)
-          $BUILD_TOOLS/zipalign -f 4 clean_renamed.apk Twitter2.0bsky_2.3_renamed.apk
+          $BUILD_TOOLS/zipalign -f 4 target_renamed.apk Twitter2.0bsky_2.3_renamed.apk
 
       - name: Upload Renamed APK
         uses: actions/upload-artifact@v4
