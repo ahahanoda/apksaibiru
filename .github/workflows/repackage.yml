@@ -1,0 +1,64 @@
+name: Repackage APK
+
+on:
+  workflow_dispatch: # 手動実行ボタンを有効化
+
+env:
+  # ▼ ここに新しいパッケージ名を入力してください（元の名前と被らないようにする）
+  NEW_PKG: "com.custom.myapp.clone"
+
+jobs:
+  repackage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Download Apktool
+        run: |
+          wget https://github.com -O apktool.jar
+
+      - name: Decompile APK
+        run: |
+          # リソースの破壊を防ぐため -r (リソースをデコードしない) オプションを使用
+          java -jar apktool.jar d -r base.apk -o decoded_apk
+
+      - name: Change Package Name
+        run: |
+          # AndroidManifest.xml 内の元のパッケージ名を取得して置換
+          OLD_PKG=$(grep -oP 'package="\K[^"]+' decoded_apk/AndroidManifest.xml)
+          echo "Old Package: $OLD_PKG"
+          echo "New Package: ${{ env.NEW_PKG }}"
+          
+          sed -i "s/package=\"$OLD_PKG\"/package=\"${{ env.NEW_PKG }}\"/g" decoded_apk/AndroidManifest.xml
+          
+          # 権限(authorities)の重複によるインストールエラーを防止するため置換
+          sed -i "s/$OLD_PKG.fileprovider/${{ env.NEW_PKG }}.fileprovider/g" decoded_apk/AndroidManifest.xml
+          sed -i "s/$OLD_PKG.androidx-startup/${{ env.NEW_PKG }}.androidx-startup/g" decoded_apk/AndroidManifest.xml
+
+      - name: Rebuild APK
+        run: |
+          java -jar apktool.jar b decoded_apk -o 
+                - name: Align and Sign APK (Android 2.3 Compatible)
+        run: |
+          BUILD_TOOLS=$(find $ANDROID_HOME/build-tools -maxdepth 1 | sort -V | tail -n 1)
+          $BUILD_TOOLS/zipalign -p -f -v 4 unsigned.apk aligned.apk
+          
+          # Android 2.3は古い暗号化アルゴリズム(SHA1withRSA)でないと署名を認識しないため指定
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -sigalg SHA1withRSA -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          
+          # v1署名を強制し、v2/v3署名を無効化
+          $BUILD_TOOLS/apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --v1-signing-enabled true --v2-signing-enabled false --v3-signing-enabled false --out modified_app.apk aligned.apk
+
+      - name: Upload Modified APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: modified-apk
+          path: modified_app.apk
