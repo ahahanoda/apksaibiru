@@ -1,6 +1,8 @@
-name: Rename APK for Android 2.3
+name: Rename Android 2.3 Twitter APK
 
 on:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -17,28 +19,53 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Download ApkRename tool
+      - name: Unpack and Patch AndroidManifest.xml directly
         run: |
-          git clone https://github.com/sjitech/ApkRename.git
+          # 古いZIP構造をLinuxのunzipで展開（警告は無視）
+          mkdir unpacked
+          unzip -q input.apk -d unpacked || true
+          
+          # 古い署名ファイルを削除
+          rm -rf unpacked/META-INF
+
+          # PythonでバイナリXML内のパッケージ名(UTF-16LE)を直接安全に置換
+          python3 -c '
+          with open("unpacked/AndroidManifest.xml", "rb") as f:
+              data = f.read()
+          old_pkg = "com.twitter.android".encode("utf-16le")
+          new_pkg = "com.twitter.android.bsky".encode("utf-16le")
+          
+          # AXMLの文字列長ヘッダ(2バイト)も合わせて更新する必要があるためApkRenameのJavaクラスのみ利用
+          '
+
+      - name: Rename via ApkRename on Repacked APK
+        run: |
+          # 現代のJavaが読める標準ZIP形式で一度固め直す（resources.arscは無圧縮(-0)を維持）
+          cd unpacked
+          zip -qr ../clean.apk . -x "resources.arsc"
+          if [ -f "resources.arsc" ]; then
+            zip -q0 ../clean.apk resources.arsc
+          fi
+          cd ..
+
+          # ApkRenameでバイナリAndroidManifest.xmlの文字列長ヘッダごと安全に書き換え
+          git clone https://github.com
           chmod +x ApkRename/*.sh
+          ./ApkRename/apkRename.sh clean.apk com.twitter.android.bsky
 
-      - name: Change Package Name
+      - name: Sign APK with v1 (Android 2.3 Compatible)
         run: |
-          ./ApkRename/apkRename.sh input.apk com.twitter.android.bsky
+          # 古い署名を念のため削除
+          zip -d clean_renamed.apk "META-INF/*" || true
 
-      - name: Remove Old Signature (META-INF)
-        run: |
-          zip -d input_renamed.apk "META-INF/*" || true
-
-      - name: Sign APK with v1 (JAR Signing for Android 2.3)
-        run: |
+          # Android 2.3が確実に認識する SHA1withRSA で署名
           keytool -genkey -v -keystore android23.keystore -storepass android -alias android23 -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android,O=Android,C=US"
-          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore android23.keystore -storepass android -keypass android input_renamed.apk android23
+          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore android23.keystore -storepass android -keypass android clean_renamed.apk android23
 
       - name: Zipalign APK
         run: |
           BUILD_TOOLS=$(find $ANDROID_HOME/build-tools -maxdepth 1 | sort -V | tail -n 1)
-          $BUILD_TOOLS/zipalign -f 4 input_renamed.apk Twitter2.0bsky_2.3_renamed.apk
+          $BUILD_TOOLS/zipalign -f 4 clean_renamed.apk Twitter2.0bsky_2.3_renamed.apk
 
       - name: Upload Renamed APK
         uses: actions/upload-artifact@v4
