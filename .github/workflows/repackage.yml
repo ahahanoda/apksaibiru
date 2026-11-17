@@ -19,7 +19,7 @@ jobs:
 
       - name: Download ApkRename tool
         run: |
-          git clone https://github.com
+          git clone https://github.com/sjitech/ApkRename.git
           chmod +x ApkRename/*.sh
 
       - name: Change Package Name
